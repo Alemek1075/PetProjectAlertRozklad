@@ -1,0 +1,26 @@
+@keyframes editor-new-hold {
+  0%, 66.6% { background-color: var(--primary-soft); }
+}
+.editor-new { animation: editor-new-hold 1800ms ease-out 1; }
+
+.editor-appbar {
+  -webkit-app-region: drag;
+  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 140px)));
+}
+.editor-appbar :where(button, a, input, [role="tab"], [role="tablist"], [role="menu"]) { -webkit-app-region: no-drag; }
+
+.grid-half-line { border-top: 1px dashed color-mix(in oklch, var(--border) 50%, transparent); }
+
+.lesson-block { border: 1px solid color-mix(in oklch, var(--s-solid) 30%, transparent); background-color: var(--s-soft); }
+.lesson-block:hover { background-color: color-mix(in oklch, var(--s-soft), var(--foreground) 5%); }
+.lesson-block[data-invalid="true"] { border-style: dashed; border-color: var(--destructive); }
+
+@media (prefers-reduced-motion: reduce) {
+  .editor-new { animation: editor-new-hold 1200ms steps(1, end) 1; }
+}
+
+@media (forced-colors: active) {
+  .lesson-block { border-color: CanvasText; }
+}
+
+[data-slot="dialog-content"]:focus-visible { outline: none; }

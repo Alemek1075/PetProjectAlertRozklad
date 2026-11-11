@@ -24,6 +24,10 @@
       "build-ui/**/*",
       "package.json"
     ],
+    "electronLanguages": [
+      "uk",
+      "en-US"
+    ],
     "win": {
       "target": "portable",
       "icon": "build/icon.ico"

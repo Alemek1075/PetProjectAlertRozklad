@@ -22,9 +22,24 @@ class Store {
   constructor(dir) {
     this.file = path.join(dir, 'data.json');
     let data = {};
+    let raw = null;
     try {
-      data = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      raw = fs.readFileSync(this.file, 'utf8');
     } catch {
+    }
+    if (raw !== null) {
+      try {
+        data = JSON.parse(raw.replace(/^﻿/, ''));
+      } catch {
+        data = null;
+      }
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        data = {};
+        try {
+          fs.copyFileSync(this.file, path.join(dir, `data.corrupt-${Date.now()}.json`));
+        } catch {
+        }
+      }
     }
     this.lessons = Array.isArray(data.lessons) ? data.lessons : [];
     this.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };

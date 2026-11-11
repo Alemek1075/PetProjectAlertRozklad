@@ -90,10 +90,6 @@ function parseRowsWithLines(text) {
   return rows.filter((r) => r.cells.some((c) => c.trim() !== ''));
 }
 
-function parseRows(text) {
-  return parseRowsWithLines(text).map((r) => r.cells);
-}
-
 function parseWeek(raw) {
   const s = String(raw || '').trim().toLowerCase().replace(/['’ʼ`()[\]]/g, '').trim();
   if (!s || /^(щотиж|кожн|обидва|обидві|всі|усі|завжди|all|every|both|-|—)/.test(s)) return 'all';

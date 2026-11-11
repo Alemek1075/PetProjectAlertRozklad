@@ -176,7 +176,12 @@ function linkService(url) {
 
 const clip = (s, max) => (s.length > max ? `${s.slice(0, Math.max(0, max - 1)).trimEnd()}…` : s);
 
-const notificationIcon = (state) => nativeImage.createFromBuffer(iconPng(64, state || 'normal', { kind: 'app' }));
+const notificationIcons = new Map();
+function notificationIcon(state) {
+  const key = state || 'normal';
+  if (!notificationIcons.has(key)) notificationIcons.set(key, nativeImage.createFromBuffer(iconPng(64, key, { kind: 'app' })));
+  return notificationIcons.get(key);
+}
 
 function notify({ title, body, onClick, sound, icon = 'normal', sticky = false }) {
   if (!Notification.isSupported()) return;
@@ -294,6 +299,15 @@ function createTray() {
   updateTray();
 }
 
+function lockNavigation(win) {
+  const wc = win.webContents;
+  const page = (u) => String(u).split('#')[0];
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  wc.on('will-navigate', (e, url) => {
+    if (page(e.url || url) !== page(wc.getURL())) e.preventDefault();
+  });
+}
+
 function loadUi(win, page, hash) {
   if (process.env.RA_DEV_URL) win.loadURL(`${process.env.RA_DEV_URL.replace(/\/$/, '')}/${page}.html${hash ? `#${hash}` : ''}`);
   else win.loadFile(path.join(process.env.RA_UI_DIR || path.join(__dirname, '..', 'build-ui'), `${page}.html`), hash ? { hash } : {});
@@ -324,6 +338,7 @@ function createPopup() {
       backgroundThrottling: false,
     },
   });
+  lockNavigation(popup);
   loadUi(popup, 'popup');
   popup.on('show', () => popup.webContents.send('shown'));
   popup.on('hide', () => popup.webContents.send('hidden'));
@@ -429,6 +444,7 @@ function openEditor(target) {
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   editor.setMenu(null);
+  lockNavigation(editor);
   loadUi(editor, 'editor', target);
   editor.webContents.on('before-input-event', editorZoomKeys);
   editor.on('page-title-updated', (e) => e.preventDefault());
@@ -449,38 +465,58 @@ function syncTheme() {
   updateTray();
 }
 
-async function pollAlerts(manual = false) {
+let pollInFlight = null;
+let pollQueued = false;
+
+function pollAlerts(manual = false) {
+  if (pollInFlight) {
+    if (manual) pollQueued = true;
+    return pollInFlight;
+  }
+  pollInFlight = runPoll(manual).finally(() => {
+    pollInFlight = null;
+    if (!pollQueued) return undefined;
+    pollQueued = false;
+    return pollAlerts(true);
+  });
+  return pollInFlight;
+}
+
+async function runPoll(manual) {
   clearTimeout(pollTimer);
   let delay = POLL_MS;
-  const fixture = process.env.RA_ALERTS_FIXTURE;
-  if (!readToken()) {
-    setAlertsError({ code: 'no-token' });
-    broadcast();
-    pollTimer = setTimeout(pollAlerts, POLL_MS);
-    return;
-  }
-  if (!manual && Date.now() - lastFetchAt < MIN_REFRESH_GAP_MS) {
-    pollTimer = setTimeout(pollAlerts, MIN_REFRESH_GAP_MS);
-    return;
-  }
-  lastFetchAt = Date.now();
-  let payload = null;
   try {
-    if (fixture) {
-      payload = JSON.parse(fs.readFileSync(fixture, 'utf8'));
-      if (payload.__prior) applyAlertsPayload(payload.__prior, payload.__priorAt ? new Date(payload.__priorAt) : new Date(), false);
-    } else {
-      payload = await fetchActive(net.fetch, readToken());
+    const fixture = process.env.RA_ALERTS_FIXTURE;
+    const token = readToken();
+    if (!token) {
+      setAlertsError({ code: 'no-token' });
+      broadcast();
+      return;
     }
-    if (payload.__error) throw Object.assign(new Error(payload.__error.message || ''), payload.__error);
-    applyAlertsPayload(payload, new Date(), !payload.__prior);
-  } catch (e) {
-    const err = setAlertsError(e);
-    if (err.code === 'rate-limit') delay = 60_000;
+    if (!manual && Date.now() - lastFetchAt < MIN_REFRESH_GAP_MS) {
+      delay = MIN_REFRESH_GAP_MS;
+      return;
+    }
+    lastFetchAt = Date.now();
+    let payload = null;
+    try {
+      if (fixture) {
+        payload = JSON.parse(fs.readFileSync(fixture, 'utf8'));
+        if (payload.__prior) applyAlertsPayload(payload.__prior, payload.__priorAt ? new Date(payload.__priorAt) : new Date(), false);
+      } else {
+        payload = await fetchActive(net.fetch, token);
+      }
+      if (payload.__error) throw Object.assign(new Error(payload.__error.message || ''), payload.__error);
+      applyAlertsPayload(payload, new Date(), !payload.__prior);
+    } catch (e) {
+      const err = setAlertsError(e);
+      if (err.code === 'rate-limit') delay = 60_000;
+    }
+    if (fixture && payload && payload.__patch) Object.assign(alerts, payload.__patch);
+    broadcast();
+  } finally {
+    pollTimer = setTimeout(pollAlerts, delay);
   }
-  if (fixture && payload && payload.__patch) Object.assign(alerts, payload.__patch);
-  broadcast();
-  pollTimer = setTimeout(pollAlerts, delay);
 }
 
 function applyAlertsPayload(payload, at, announce) {
@@ -493,7 +529,7 @@ function applyAlertsPayload(payload, at, announce) {
   alerts = {
     status: 'ok', error: null, errorCode: null, errorStatus: null, updatedAt: at.toISOString(), ...summary, lastClear,
   };
-  if (announce && prev.status === 'ok') announceChange(prev.focus, alerts.focus);
+  if (announce && prev.updatedAt) announceChange(prev.focus, alerts.focus, prev.status !== 'ok');
   else alertAnnounced = alerts.focus.active && alertHoursOpen(store.settings.alertHours);
 }
 
@@ -505,7 +541,7 @@ function setAlertsError(e) {
 
 let alertAnnounced = false;
 
-function announceChange(prev, cur) {
+function announceChange(prev, cur, afterOutage = false) {
   if (!store.settings.alertNotifications || prev.name !== cur.name) {
     alertAnnounced = false;
     return;
@@ -530,7 +566,7 @@ function announceChange(prev, cur) {
   } else if (prev.active && !cur.active) {
     if (alertAnnounced) {
       const endedAt = new Date();
-      const lasted = prev.startedAt
+      const lasted = prev.startedAt && !afterOutage
         ? `Тривала ${fmtDuration((endedAt - new Date(prev.startedAt)) / 60_000)} (${isoClock(prev.startedAt)}–${clock(endedAt)}).`
         : '';
       notify({ title: withWhere('Відбій тривоги', cur.name), body: lasted, sound: 'clear', icon: 'normal' });
@@ -592,8 +628,10 @@ function checkReminders() {
 }
 
 function openLink(url) {
+  url = typeof url === 'string' ? url.trim() : '';
+  if (!url) return;
   if (!/^(https?|zoommtg|zoomus|msteams):/i.test(url)) url = `https://${url}`;
-  shell.openExternal(url);
+  shell.openExternal(url).catch(() => {});
 }
 
 function applyAutostart() {
@@ -753,7 +791,7 @@ ipcMain.on('popup-height', (e, h) => {
   if (popup.isVisible() && Math.abs(popup.getBounds().height - h) >= 2) positionPopup(h);
 });
 
-app.on('second-instance', () => showPopup());
+app.on('second-instance', () => { if (popup && tray) showPopup(); });
 app.on('window-all-closed', (e) => e.preventDefault());
 app.on('before-quit', () => { app.isQuitting = true; });
 
